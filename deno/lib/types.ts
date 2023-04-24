@@ -18,6 +18,7 @@ import {
   ParsePath,
   ParseReturnType,
   ParseStatus,
+  replaceContextIssues,
   SyncParseReturnType,
 } from "./helpers/parseUtil.ts";
 import { partialUtil } from "./helpers/partialUtil.ts";
@@ -42,6 +43,7 @@ import {
 ///////////////////////////////////////
 
 export type RefinementCtx = {
+  issues: ZodIssue[];
   addIssue: (arg: IssueData) => void;
   path: (string | number)[];
 };
@@ -358,25 +360,29 @@ export abstract class ZodType<
   }
 
   _refinement(
-    refinement: RefinementEffect<Output>["refinement"]
+    refinement: RefinementEffect<Output>["refinement"],
+    asyncOptions?: AsyncRefinementOptions
   ): ZodEffects<this, Output, Input> {
     return new ZodEffects({
       schema: this,
       typeName: ZodFirstPartyTypeKind.ZodEffects,
-      effect: { type: "refinement", refinement },
+      effect: { type: "refinement", refinement, asyncOptions },
     });
   }
 
   superRefine<RefinedOutput extends Output>(
-    refinement: (arg: Output, ctx: RefinementCtx) => arg is RefinedOutput
+    refinement: (arg: Output, ctx: RefinementCtx) => arg is RefinedOutput,
+    asyncOptions?: AsyncRefinementOptions
   ): ZodEffects<this, RefinedOutput, Input>;
   superRefine(
-    refinement: (arg: Output, ctx: RefinementCtx) => void
+    refinement: (arg: Output, ctx: RefinementCtx) => void,
+    asyncOptions?: AsyncRefinementOptions
   ): ZodEffects<this, Output, Input>;
   superRefine(
-    refinement: (arg: Output, ctx: RefinementCtx) => unknown
+    refinement: (arg: Output, ctx: RefinementCtx) => unknown,
+    asyncOptions?: AsyncRefinementOptions
   ): ZodEffects<this, Output, Input> {
-    return this._refinement(refinement);
+    return this._refinement(refinement, asyncOptions);
   }
 
   constructor(def: Def) {
@@ -431,13 +437,14 @@ export abstract class ZodType<
   }
 
   transform<NewOut>(
-    transform: (arg: Output, ctx: RefinementCtx) => NewOut | Promise<NewOut>
+    transform: (arg: Output, ctx: RefinementCtx) => NewOut | Promise<NewOut>,
+    asyncOptions?: AsyncRefinementOptions
   ): ZodEffects<this, NewOut> {
     return new ZodEffects({
       ...processCreateParams(this._def),
       schema: this,
       typeName: ZodFirstPartyTypeKind.ZodEffects,
-      effect: { type: "transform", transform },
+      effect: { type: "transform", transform, asyncOptions },
     }) as any;
   }
 
@@ -507,20 +514,26 @@ export abstract class ZodType<
 /////////////////////////////////////////
 export type IpVersion = "v4" | "v6";
 export type ZodStringCheck =
-  | { kind: "min"; value: number; message?: string }
-  | { kind: "max"; value: number; message?: string }
-  | { kind: "length"; value: number; message?: string }
-  | { kind: "email"; message?: string }
-  | { kind: "url"; message?: string }
-  | { kind: "emoji"; message?: string }
-  | { kind: "uuid"; message?: string }
-  | { kind: "cuid"; message?: string }
-  | { kind: "includes"; value: string; position?: number; message?: string }
-  | { kind: "cuid2"; message?: string }
-  | { kind: "ulid"; message?: string }
-  | { kind: "startsWith"; value: string; message?: string }
-  | { kind: "endsWith"; value: string; message?: string }
-  | { kind: "regex"; regex: RegExp; message?: string }
+  | { kind: "min"; value: number; message?: string; fatal?: boolean }
+  | { kind: "max"; value: number; message?: string; fatal?: boolean }
+  | { kind: "length"; value: number; message?: string; fatal?: boolean }
+  | { kind: "email"; message?: string; fatal?: boolean }
+  | { kind: "url"; message?: string; fatal?: boolean }
+  | { kind: "emoji"; message?: string; fatal?: boolean }
+  | { kind: "uuid"; message?: string; fatal?: boolean }
+  | { kind: "cuid"; message?: string; fatal?: boolean }
+  | {
+      kind: "includes";
+      value: string;
+      position?: number;
+      message?: string;
+      fatal?: boolean;
+    }
+  | { kind: "cuid2"; message?: string; fatal?: boolean }
+  | { kind: "ulid"; message?: string; fatal?: boolean }
+  | { kind: "startsWith"; value: string; message?: string; fatal?: boolean }
+  | { kind: "endsWith"; value: string; message?: string; fatal?: boolean }
+  | { kind: "regex"; regex: RegExp; message?: string; fatal?: boolean }
   | { kind: "trim"; message?: string }
   | { kind: "toLowerCase"; message?: string }
   | { kind: "toUpperCase"; message?: string }
@@ -529,8 +542,9 @@ export type ZodStringCheck =
       offset: boolean;
       precision: number | null;
       message?: string;
+      fatal?: boolean;
     }
-  | { kind: "ip"; version?: IpVersion; message?: string };
+  | { kind: "ip"; version?: IpVersion; message?: string; fatal?: boolean };
 
 export interface ZodStringDef extends ZodTypeDef {
   checks: ZodStringCheck[];
@@ -640,8 +654,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             inclusive: true,
             exact: false,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "max") {
         if (input.data.length > check.value) {
@@ -653,8 +668,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             inclusive: true,
             exact: false,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "length") {
         const tooBig = input.data.length > check.value;
@@ -669,6 +685,7 @@ export class ZodString extends ZodType<string, ZodStringDef> {
               inclusive: true,
               exact: true,
               message: check.message,
+              fatal: check.fatal,
             });
           } else if (tooSmall) {
             addIssueToContext(ctx, {
@@ -678,9 +695,10 @@ export class ZodString extends ZodType<string, ZodStringDef> {
               inclusive: true,
               exact: true,
               message: check.message,
+              fatal: check.fatal,
             });
           }
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "email") {
         if (!emailRegex.test(input.data)) {
@@ -689,8 +707,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "email",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "emoji") {
         if (!emojiRegex.test(input.data)) {
@@ -699,8 +718,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "emoji",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "uuid") {
         if (!uuidRegex.test(input.data)) {
@@ -709,8 +729,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "uuid",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "cuid") {
         if (!cuidRegex.test(input.data)) {
@@ -719,8 +740,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "cuid",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "cuid2") {
         if (!cuid2Regex.test(input.data)) {
@@ -729,8 +751,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "cuid2",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "ulid") {
         if (!ulidRegex.test(input.data)) {
@@ -739,8 +762,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "ulid",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "url") {
         try {
@@ -751,8 +775,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "url",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "regex") {
         check.regex.lastIndex = 0;
@@ -763,8 +788,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "regex",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "trim") {
         input.data = input.data.trim();
@@ -775,8 +801,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             code: ZodIssueCode.invalid_string,
             validation: { includes: check.value, position: check.position },
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "toLowerCase") {
         input.data = input.data.toLowerCase();
@@ -789,8 +816,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             code: ZodIssueCode.invalid_string,
             validation: { startsWith: check.value },
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "endsWith") {
         if (!(input.data as string).endsWith(check.value)) {
@@ -799,8 +827,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             code: ZodIssueCode.invalid_string,
             validation: { endsWith: check.value },
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "datetime") {
         const regex = datetimeRegex(check);
@@ -811,8 +840,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             code: ZodIssueCode.invalid_string,
             validation: "datetime",
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "ip") {
         if (!isValidIP(input.data, check.version)) {
@@ -821,8 +851,9 @@ export class ZodString extends ZodType<string, ZodStringDef> {
             validation: "ip",
             code: ZodIssueCode.invalid_string,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else {
         util.assertNever(check);
@@ -835,12 +866,12 @@ export class ZodString extends ZodType<string, ZodStringDef> {
   protected _regex = (
     regex: RegExp,
     validation: StringValidation,
-    message?: errorUtil.ErrMessage
+    options?: errorUtil.ErrMessageOrOptions
   ) =>
     this.refinement((data) => regex.test(data), {
       validation,
       code: ZodIssueCode.invalid_string,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
 
   _addCheck(check: ZodStringCheck) {
@@ -850,112 +881,112 @@ export class ZodString extends ZodType<string, ZodStringDef> {
     });
   }
 
-  email(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "email", ...errorUtil.errToObj(message) });
+  email(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "email", ...errorUtil.normalize(options) });
   }
-  url(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "url", ...errorUtil.errToObj(message) });
+  url(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "url", ...errorUtil.normalize(options) });
   }
-  emoji(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "emoji", ...errorUtil.errToObj(message) });
+  emoji(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "emoji", ...errorUtil.normalize(options) });
   }
-  uuid(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "uuid", ...errorUtil.errToObj(message) });
+  uuid(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "uuid", ...errorUtil.normalize(options) });
   }
-  cuid(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "cuid", ...errorUtil.errToObj(message) });
+  cuid(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "cuid", ...errorUtil.normalize(options) });
   }
-  cuid2(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "cuid2", ...errorUtil.errToObj(message) });
+  cuid2(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "cuid2", ...errorUtil.normalize(options) });
   }
-  ulid(message?: errorUtil.ErrMessage) {
-    return this._addCheck({ kind: "ulid", ...errorUtil.errToObj(message) });
+  ulid(options?: errorUtil.ErrMessageOrOptions) {
+    return this._addCheck({ kind: "ulid", ...errorUtil.normalize(options) });
   }
 
-  ip(options?: string | { version?: "v4" | "v6"; message?: string }) {
-    return this._addCheck({ kind: "ip", ...errorUtil.errToObj(options) });
+  ip(options?: errorUtil.ErrMessageOrOptions<{ version?: "v4" | "v6" }>) {
+    return this._addCheck({ kind: "ip", ...errorUtil.normalize(options) });
   }
 
   datetime(
-    options?:
-      | string
-      | {
-          message?: string | undefined;
-          precision?: number | null;
-          offset?: boolean;
-        }
+    options?: errorUtil.ErrMessageOrOptions<{
+      precision?: number | null;
+      offset?: boolean;
+    }>
   ) {
     if (typeof options === "string") {
       return this._addCheck({
         kind: "datetime",
+        ...errorUtil.normalize(options),
         precision: null,
         offset: false,
-        message: options,
       });
     }
     return this._addCheck({
       kind: "datetime",
+      ...errorUtil.normalize(options),
       precision:
         typeof options?.precision === "undefined" ? null : options?.precision,
       offset: options?.offset ?? false,
-      ...errorUtil.errToObj(options?.message),
     });
   }
 
-  regex(regex: RegExp, message?: errorUtil.ErrMessage) {
+  regex(regex: RegExp, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "regex",
       regex: regex,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  includes(value: string, options?: { message?: string; position?: number }) {
+  includes(
+    value: string,
+    options?: errorUtil.ErrOptions<{ position?: number }>
+  ) {
     return this._addCheck({
       kind: "includes",
       value: value,
       position: options?.position,
-      ...errorUtil.errToObj(options?.message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  startsWith(value: string, message?: errorUtil.ErrMessage) {
+  startsWith(value: string, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "startsWith",
       value: value,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  endsWith(value: string, message?: errorUtil.ErrMessage) {
+  endsWith(value: string, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "endsWith",
       value: value,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  min(minLength: number, message?: errorUtil.ErrMessage) {
+  min(minLength: number, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: minLength,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  max(maxLength: number, message?: errorUtil.ErrMessage) {
+  max(maxLength: number, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: maxLength,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  length(len: number, message?: errorUtil.ErrMessage) {
+  length(len: number, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "length",
       value: len,
-      ...errorUtil.errToObj(message),
+      ...errorUtil.normalize(options),
     });
   }
 
@@ -963,8 +994,8 @@ export class ZodString extends ZodType<string, ZodStringDef> {
    * @deprecated Use z.string().min(1) instead.
    * @see {@link ZodString.min}
    */
-  nonempty = (message?: errorUtil.ErrMessage) =>
-    this.min(1, errorUtil.errToObj(message));
+  nonempty = (options?: errorUtil.ErrMessageOrOptions) =>
+    this.min(1, errorUtil.normalize(options));
 
   trim = () =>
     new ZodString({
@@ -1050,11 +1081,23 @@ export class ZodString extends ZodType<string, ZodStringDef> {
 /////////////////////////////////////////
 /////////////////////////////////////////
 export type ZodNumberCheck =
-  | { kind: "min"; value: number; inclusive: boolean; message?: string }
-  | { kind: "max"; value: number; inclusive: boolean; message?: string }
-  | { kind: "int"; message?: string }
-  | { kind: "multipleOf"; value: number; message?: string }
-  | { kind: "finite"; message?: string };
+  | {
+      kind: "min";
+      value: number;
+      inclusive: boolean;
+      message?: string;
+      fatal?: boolean;
+    }
+  | {
+      kind: "max";
+      value: number;
+      inclusive: boolean;
+      message?: string;
+      fatal?: boolean;
+    }
+  | { kind: "int"; message?: string; fatal?: boolean }
+  | { kind: "multipleOf"; value: number; message?: string; fatal?: boolean }
+  | { kind: "finite"; message?: string; fatal?: boolean };
 
 // https://stackoverflow.com/questions/3966484/why-does-modulus-operator-return-fractional-number-in-javascript/31711034#31711034
 function floatSafeRemainder(val: number, step: number) {
@@ -1100,8 +1143,9 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
             expected: "integer",
             received: "float",
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "min") {
         const tooSmall = check.inclusive
@@ -1116,8 +1160,9 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
             inclusive: check.inclusive,
             exact: false,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "max") {
         const tooBig = check.inclusive
@@ -1132,8 +1177,9 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
             inclusive: check.inclusive,
             exact: false,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "multipleOf") {
         if (floatSafeRemainder(input.data, check.value) !== 0) {
@@ -1142,8 +1188,9 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
             code: ZodIssueCode.not_multiple_of,
             multipleOf: check.value,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "finite") {
         if (!Number.isFinite(input.data)) {
@@ -1151,8 +1198,9 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
           addIssueToContext(ctx, {
             code: ZodIssueCode.not_finite,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else {
         util.assertNever(check);
@@ -1173,29 +1221,29 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
     });
   };
 
-  gte(value: number, message?: errorUtil.ErrMessage) {
-    return this.setLimit("min", value, true, errorUtil.toString(message));
+  gte(value: number, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("min", value, true, options);
   }
   min = this.gte;
 
-  gt(value: number, message?: errorUtil.ErrMessage) {
-    return this.setLimit("min", value, false, errorUtil.toString(message));
+  gt(value: number, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("min", value, false, options);
   }
 
-  lte(value: number, message?: errorUtil.ErrMessage) {
-    return this.setLimit("max", value, true, errorUtil.toString(message));
+  lte(value: number, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("max", value, true, options);
   }
   max = this.lte;
 
-  lt(value: number, message?: errorUtil.ErrMessage) {
-    return this.setLimit("max", value, false, errorUtil.toString(message));
+  lt(value: number, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("max", value, false, options);
   }
 
   protected setLimit(
     kind: "min" | "max",
     value: number,
     inclusive: boolean,
-    message?: string
+    options?: errorUtil.ErrMessageOrOptions
   ) {
     return new ZodNumber({
       ...this._def,
@@ -1205,7 +1253,7 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
           kind,
           value,
           inclusive,
-          message: errorUtil.toString(message),
+          ...errorUtil.normalize(options),
         },
       ],
     });
@@ -1218,76 +1266,76 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
     });
   }
 
-  int(message?: errorUtil.ErrMessage) {
+  int(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "int",
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  positive(message?: errorUtil.ErrMessage) {
+  positive(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: 0,
       inclusive: false,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  negative(message?: errorUtil.ErrMessage) {
+  negative(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: 0,
       inclusive: false,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  nonpositive(message?: errorUtil.ErrMessage) {
+  nonpositive(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: 0,
       inclusive: true,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  nonnegative(message?: errorUtil.ErrMessage) {
+  nonnegative(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: 0,
       inclusive: true,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  multipleOf(value: number, message?: errorUtil.ErrMessage) {
+  multipleOf(value: number, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "multipleOf",
       value: value,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
   step = this.multipleOf;
 
-  finite(message?: errorUtil.ErrMessage) {
+  finite(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "finite",
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  safe(message?: errorUtil.ErrMessage) {
+  safe(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       inclusive: true,
       value: Number.MIN_SAFE_INTEGER,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     })._addCheck({
       kind: "max",
       inclusive: true,
       value: Number.MAX_SAFE_INTEGER,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
@@ -1347,9 +1395,21 @@ export class ZodNumber extends ZodType<number, ZodNumberDef> {
 /////////////////////////////////////////
 /////////////////////////////////////////
 export type ZodBigIntCheck =
-  | { kind: "min"; value: bigint; inclusive: boolean; message?: string }
-  | { kind: "max"; value: bigint; inclusive: boolean; message?: string }
-  | { kind: "multipleOf"; value: bigint; message?: string };
+  | {
+      kind: "min";
+      value: bigint;
+      inclusive: boolean;
+      message?: string;
+      fatal?: boolean;
+    }
+  | {
+      kind: "max";
+      value: bigint;
+      inclusive: boolean;
+      message?: string;
+      fatal?: boolean;
+    }
+  | { kind: "multipleOf"; value: bigint; message?: string; fatal?: boolean };
 
 export interface ZodBigIntDef extends ZodTypeDef {
   checks: ZodBigIntCheck[];
@@ -1389,8 +1449,9 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
             minimum: check.value,
             inclusive: check.inclusive,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "max") {
         const tooBig = check.inclusive
@@ -1404,8 +1465,9 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
             maximum: check.value,
             inclusive: check.inclusive,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "multipleOf") {
         if (input.data % check.value !== BigInt(0)) {
@@ -1414,8 +1476,9 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
             code: ZodIssueCode.not_multiple_of,
             multipleOf: check.value,
             message: check.message,
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else {
         util.assertNever(check);
@@ -1436,29 +1499,29 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
     });
   };
 
-  gte(value: bigint, message?: errorUtil.ErrMessage) {
-    return this.setLimit("min", value, true, errorUtil.toString(message));
+  gte(value: bigint, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("min", value, true, options);
   }
   min = this.gte;
 
-  gt(value: bigint, message?: errorUtil.ErrMessage) {
-    return this.setLimit("min", value, false, errorUtil.toString(message));
+  gt(value: bigint, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("min", value, false, options);
   }
 
-  lte(value: bigint, message?: errorUtil.ErrMessage) {
-    return this.setLimit("max", value, true, errorUtil.toString(message));
+  lte(value: bigint, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("max", value, true, options);
   }
   max = this.lte;
 
-  lt(value: bigint, message?: errorUtil.ErrMessage) {
-    return this.setLimit("max", value, false, errorUtil.toString(message));
+  lt(value: bigint, options?: errorUtil.ErrMessageOrOptions) {
+    return this.setLimit("max", value, false, options);
   }
 
   protected setLimit(
     kind: "min" | "max",
     value: bigint,
     inclusive: boolean,
-    message?: string
+    options?: errorUtil.ErrMessageOrOptions
   ) {
     return new ZodBigInt({
       ...this._def,
@@ -1468,7 +1531,7 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
           kind,
           value,
           inclusive,
-          message: errorUtil.toString(message),
+          ...errorUtil.normalize(options),
         },
       ],
     });
@@ -1481,47 +1544,47 @@ export class ZodBigInt extends ZodType<bigint, ZodBigIntDef> {
     });
   }
 
-  positive(message?: errorUtil.ErrMessage) {
+  positive(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: BigInt(0),
       inclusive: false,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  negative(message?: errorUtil.ErrMessage) {
+  negative(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: BigInt(0),
       inclusive: false,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  nonpositive(message?: errorUtil.ErrMessage) {
+  nonpositive(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: BigInt(0),
       inclusive: true,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  nonnegative(message?: errorUtil.ErrMessage) {
+  nonnegative(options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: BigInt(0),
       inclusive: true,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  multipleOf(value: bigint, message?: errorUtil.ErrMessage) {
+  multipleOf(value: bigint, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "multipleOf",
       value,
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
@@ -1596,8 +1659,8 @@ export class ZodBoolean extends ZodType<boolean, ZodBooleanDef> {
 ///////////////////////////////////////
 ///////////////////////////////////////
 export type ZodDateCheck =
-  | { kind: "min"; value: number; message?: string }
-  | { kind: "max"; value: number; message?: string };
+  | { kind: "min"; value: number; message?: string; fatal?: boolean }
+  | { kind: "max"; value: number; message?: string; fatal?: boolean };
 export interface ZodDateDef extends ZodTypeDef {
   checks: ZodDateCheck[];
   coerce: boolean;
@@ -1643,8 +1706,9 @@ export class ZodDate extends ZodType<Date, ZodDateDef> {
             exact: false,
             minimum: check.value,
             type: "date",
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else if (check.kind === "max") {
         if (input.data.getTime() > check.value) {
@@ -1656,8 +1720,9 @@ export class ZodDate extends ZodType<Date, ZodDateDef> {
             exact: false,
             maximum: check.value,
             type: "date",
+            fatal: check.fatal,
           });
-          status.dirty();
+          status.dirtyOrAbort(check.fatal);
         }
       } else {
         util.assertNever(check);
@@ -1677,19 +1742,19 @@ export class ZodDate extends ZodType<Date, ZodDateDef> {
     });
   }
 
-  min(minDate: Date, message?: errorUtil.ErrMessage) {
+  min(minDate: Date, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "min",
       value: minDate.getTime(),
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
-  max(maxDate: Date, message?: errorUtil.ErrMessage) {
+  max(maxDate: Date, options?: errorUtil.ErrMessageOrOptions) {
     return this._addCheck({
       kind: "max",
       value: maxDate.getTime(),
-      message: errorUtil.toString(message),
+      ...errorUtil.normalize(options),
     });
   }
 
@@ -1955,9 +2020,9 @@ export interface ZodArrayDef<T extends ZodTypeAny = ZodTypeAny>
   extends ZodTypeDef {
   type: T;
   typeName: ZodFirstPartyTypeKind.ZodArray;
-  exactLength: { value: number; message?: string } | null;
-  minLength: { value: number; message?: string } | null;
-  maxLength: { value: number; message?: string } | null;
+  exactLength: { value: number; message?: string; fatal?: boolean } | null;
+  minLength: { value: number; message?: string; fatal?: boolean } | null;
+  maxLength: { value: number; message?: string; fatal?: boolean } | null;
 }
 
 export type ArrayCardinality = "many" | "atleastone";
@@ -2004,8 +2069,9 @@ export class ZodArray<
           inclusive: true,
           exact: true,
           message: def.exactLength.message,
+          fatal: def.exactLength.fatal,
         });
-        status.dirty();
+        status.dirtyOrAbort(def.exactLength.fatal);
       }
     }
 
@@ -2018,8 +2084,9 @@ export class ZodArray<
           inclusive: true,
           exact: false,
           message: def.minLength.message,
+          fatal: def.minLength.fatal,
         });
-        status.dirty();
+        status.dirtyOrAbort(def.minLength.fatal);
       }
     }
 
@@ -2032,8 +2099,9 @@ export class ZodArray<
           inclusive: true,
           exact: false,
           message: def.maxLength.message,
+          fatal: def.maxLength.fatal,
         });
-        status.dirty();
+        status.dirtyOrAbort(def.maxLength.fatal);
       }
     }
 
@@ -2062,29 +2130,29 @@ export class ZodArray<
     return this._def.type;
   }
 
-  min(minLength: number, message?: errorUtil.ErrMessage): this {
+  min(minLength: number, options?: errorUtil.ErrMessageOrOptions): this {
     return new ZodArray({
       ...this._def,
-      minLength: { value: minLength, message: errorUtil.toString(message) },
+      minLength: { value: minLength, ...errorUtil.normalize(options) },
     }) as any;
   }
 
-  max(maxLength: number, message?: errorUtil.ErrMessage): this {
+  max(maxLength: number, options?: errorUtil.ErrMessageOrOptions): this {
     return new ZodArray({
       ...this._def,
-      maxLength: { value: maxLength, message: errorUtil.toString(message) },
+      maxLength: { value: maxLength, ...errorUtil.normalize(options) },
     }) as any;
   }
 
-  length(len: number, message?: errorUtil.ErrMessage): this {
+  length(len: number, options?: errorUtil.ErrMessageOrOptions): this {
     return new ZodArray({
       ...this._def,
-      exactLength: { value: len, message: errorUtil.toString(message) },
+      exactLength: { value: len, ...errorUtil.normalize(options) },
     }) as any;
   }
 
-  nonempty(message?: errorUtil.ErrMessage): ZodArray<T, "atleastone"> {
-    return this.min(1, message) as any;
+  nonempty(options?: errorUtil.ErrMessageOrOptions): ZodArray<T, "atleastone"> {
+    return this.min(1, options) as any;
   }
 
   static create = <T extends ZodTypeAny>(
@@ -2343,8 +2411,9 @@ export class ZodObject<
     return this._def.shape();
   }
 
-  strict(message?: errorUtil.ErrMessage): ZodObject<T, "strict", Catchall> {
-    errorUtil.errToObj;
+  strict(
+    message?: string | { message?: string }
+  ): ZodObject<T, "strict", Catchall> {
     return new ZodObject({
       ...this._def,
       unknownKeys: "strict",
@@ -2355,7 +2424,7 @@ export class ZodObject<
                 this._def.errorMap?.(issue, ctx).message ?? ctx.defaultError;
               if (issue.code === "unrecognized_keys")
                 return {
-                  message: errorUtil.errToObj(message).message ?? defaultError,
+                  message: errorUtil.normalize(message).message ?? defaultError,
                 };
               return {
                 message: defaultError,
@@ -3520,8 +3589,8 @@ export interface ZodSetDef<Value extends ZodTypeAny = ZodTypeAny>
   extends ZodTypeDef {
   valueType: Value;
   typeName: ZodFirstPartyTypeKind.ZodSet;
-  minSize: { value: number; message?: string } | null;
-  maxSize: { value: number; message?: string } | null;
+  minSize: { value: number; message?: string; fatal?: boolean } | null;
+  maxSize: { value: number; message?: string; fatal?: boolean } | null;
 }
 
 export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
@@ -3551,8 +3620,9 @@ export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
           inclusive: true,
           exact: false,
           message: def.minSize.message,
+          fatal: def.minSize.fatal,
         });
-        status.dirty();
+        status.dirtyOrAbort(def.minSize.fatal);
       }
     }
 
@@ -3565,8 +3635,9 @@ export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
           inclusive: true,
           exact: false,
           message: def.maxSize.message,
+          fatal: def.maxSize.fatal,
         });
-        status.dirty();
+        status.dirtyOrAbort(def.maxSize.fatal);
       }
     }
 
@@ -3593,26 +3664,26 @@ export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
     }
   }
 
-  min(minSize: number, message?: errorUtil.ErrMessage): this {
+  min(minSize: number, options?: errorUtil.ErrMessageOrOptions): this {
     return new ZodSet({
       ...this._def,
-      minSize: { value: minSize, message: errorUtil.toString(message) },
+      minSize: { value: minSize, ...errorUtil.normalize(options) },
     }) as any;
   }
 
-  max(maxSize: number, message?: errorUtil.ErrMessage): this {
+  max(maxSize: number, options?: errorUtil.ErrMessageOrOptions): this {
     return new ZodSet({
       ...this._def,
-      maxSize: { value: maxSize, message: errorUtil.toString(message) },
+      maxSize: { value: maxSize, ...errorUtil.normalize(options) },
     }) as any;
   }
 
-  size(size: number, message?: errorUtil.ErrMessage): this {
-    return this.min(size, message).max(size, message) as any;
+  size(size: number, options?: errorUtil.ErrMessageOrOptions): this {
+    return this.min(size, options).max(size, options) as any;
   }
 
-  nonempty(message?: errorUtil.ErrMessage): ZodSet<Value> {
-    return this.min(1, message) as any;
+  nonempty(options?: errorUtil.ErrMessageOrOptions): ZodSet<Value> {
+    return this.min(1, options) as any;
   }
 
   static create = <Value extends ZodTypeAny = ZodTypeAny>(
@@ -4174,13 +4245,21 @@ export class ZodPromise<T extends ZodTypeAny> extends ZodType<
 export type Refinement<T> = (arg: T, ctx: RefinementCtx) => any;
 export type SuperRefinement<T> = (arg: T, ctx: RefinementCtx) => void;
 
+export type AsyncRefinementOptions = {
+  cache?: boolean;
+  debounce?: { ms: number };
+  freshest?: boolean;
+};
+
 export type RefinementEffect<T> = {
   type: "refinement";
   refinement: (arg: T, ctx: RefinementCtx) => any;
+  asyncOptions?: AsyncRefinementOptions;
 };
 export type TransformEffect<T> = {
   type: "transform";
   transform: (arg: T, ctx: RefinementCtx) => any;
+  asyncOptions?: AsyncRefinementOptions;
 };
 export type PreprocessEffect<T> = {
   type: "preprocess";
@@ -4190,6 +4269,11 @@ export type Effect<T> =
   | RefinementEffect<T>
   | TransformEffect<T>
   | PreprocessEffect<T>;
+
+type AsyncEffectsCache<T> = {
+  parseResult: SyncParseReturnType<T>;
+  issues: ZodIssue[];
+};
 
 export interface ZodEffectsDef<T extends ZodTypeAny = ZodTypeAny>
   extends ZodTypeDef {
@@ -4203,6 +4287,11 @@ export class ZodEffects<
   Output = output<T>,
   Input = input<T>
 > extends ZodType<Output, ZodEffectsDef<T>, Input> {
+  _passes = 0;
+  _resolvedPass = 0;
+  _resultCache: AsyncEffectsCache<Output> | null = null;
+  _dataCache: any;
+
   innerType() {
     return this._def.schema;
   }
@@ -4215,6 +4304,8 @@ export class ZodEffects<
 
   _parse(input: ParseInput): ParseReturnType<this["_output"]> {
     const { status, ctx } = this._processInputParams(input);
+    this._passes += 1;
+    const pass = this._passes;
 
     const effect = this._def.effect || null;
 
@@ -4239,17 +4330,65 @@ export class ZodEffects<
     }
 
     const checkCtx: RefinementCtx = {
+      get issues() {
+        return ctx.common.issues;
+      },
       addIssue: (arg: IssueData) => {
         addIssueToContext(ctx, arg);
-        if (arg.fatal) {
-          status.abort();
-        } else {
-          status.dirty();
-        }
+        status.dirtyOrAbort(arg.fatal);
       },
       get path() {
         return ctx.path;
       },
+    };
+
+    const cache = effect.asyncOptions?.cache;
+    const debounceMs = effect.asyncOptions?.debounce?.ms ?? 0;
+    const debounce = debounceMs > 0;
+    const freshest = effect.asyncOptions?.freshest;
+    const checkStale = debounce || freshest;
+
+    if (!ctx.common.async && (cache || debounce || freshest)) {
+      throw new Error(
+        `Async ${effect.type} options (${[
+          cache && "cache",
+          debounce && "debounce",
+          freshest && "freshest",
+        ]
+          .filter(Boolean)
+          .join(
+            ", "
+          )}) encountered during synchronous parse operation. Use .parseAsync instead.`
+      );
+    }
+
+    const getCacheMatches = () => ctx.data === this._dataCache; // TODO may want this to handle non-primitives
+    const getPassStale = () => this._resolvedPass > pass;
+    const getPassDebounced = () => this._passes > pass;
+
+    const getResultCacheOrDefault = () =>
+      this._resultCache ?? {
+        parseResult: { status: "valid", value: ctx.data },
+        issues: [],
+      };
+
+    // Resolve handlers
+    // INFO: Should be used at every point the refinement or transform is resolved
+    const handlePassStaleOrCached = () => {
+      replaceContextIssues(ctx, getResultCacheOrDefault().issues);
+      return getResultCacheOrDefault().parseResult;
+    };
+    const handlePassResolved = (
+      ctx: ParseContext,
+      parseResult: SyncParseReturnType<Output>
+    ) => {
+      this._resolvedPass = pass;
+      this._dataCache = ctx.data;
+      this._resultCache = {
+        parseResult,
+        issues: ctx.common.issues,
+      };
+      return parseResult;
     };
 
     checkCtx.addIssue = checkCtx.addIssue.bind(checkCtx);
@@ -4283,14 +4422,36 @@ export class ZodEffects<
         executeRefinement(inner.value);
         return { status: status.value, value: inner.value };
       } else {
+        if (cache && getCacheMatches()) return handlePassStaleOrCached();
+
         return this._def.schema
           ._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx })
-          .then((inner) => {
-            if (inner.status === "aborted") return INVALID;
+          .then(async (inner) => {
+            // Check stale during inner parse
+            if (checkStale && getPassStale()) return handlePassStaleOrCached();
+
+            if (inner.status === "aborted") {
+              return handlePassResolved(ctx, INVALID);
+            }
             if (inner.status === "dirty") status.dirty();
 
+            // If debounce is set in asyncOptions, wait for debounce time before executing refinement
+            if (debounce) {
+              await new Promise((resolve) =>
+                setTimeout(() => resolve(true), debounceMs)
+              );
+              if (getPassDebounced()) return handlePassStaleOrCached();
+            }
+
             return executeRefinement(inner.value).then(() => {
-              return { status: status.value, value: inner.value };
+              // Check stale during transform
+              if (checkStale && getPassStale())
+                return handlePassStaleOrCached();
+
+              return handlePassResolved(ctx, {
+                status: status.value,
+                value: inner.value,
+              });
             });
           });
       }
@@ -4315,13 +4476,37 @@ export class ZodEffects<
 
         return { status: status.value, value: result };
       } else {
+        if (cache && getCacheMatches()) return handlePassStaleOrCached();
+
         return this._def.schema
           ._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx })
-          .then((base) => {
-            if (!isValid(base)) return base;
+          .then(async (base) => {
+            // Check stale during inner parse
+            if (checkStale && getPassStale()) return handlePassStaleOrCached();
+
+            if (!isValid(base)) {
+              return handlePassResolved(ctx, base);
+            }
+
+            // If debounce is set in asyncOptions, wait for debounce time before executing refinement
+            if (debounce) {
+              await new Promise((resolve) =>
+                setTimeout(() => resolve(true), debounceMs)
+              );
+              if (getPassDebounced()) return handlePassStaleOrCached();
+            }
 
             return Promise.resolve(effect.transform(base.value, checkCtx)).then(
-              (result) => ({ status: status.value, value: result })
+              (result) => {
+                // Check stale during transform
+                if (checkStale && getPassStale())
+                  return handlePassStaleOrCached();
+
+                return handlePassResolved(ctx, {
+                  status: status.value,
+                  value: result,
+                });
+              }
             );
           });
       }

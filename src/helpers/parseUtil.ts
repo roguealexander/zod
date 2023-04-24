@@ -54,6 +54,11 @@ export interface ParseContext {
   readonly data: any;
   readonly parsedType: ZodParsedType;
 }
+export type MutParseContext = ParseContext & {
+  readonly common: {
+    issues: ZodIssue[];
+  };
+};
 
 export type ParseInput = {
   data: any;
@@ -61,11 +66,11 @@ export type ParseInput = {
   parent: ParseContext;
 };
 
-export function addIssueToContext(
+export function makeIssueWithContext(
   ctx: ParseContext,
   issueData: IssueData
-): void {
-  const issue = makeIssue({
+): ZodIssue {
+  return makeIssue({
     issueData: issueData,
     data: ctx.data,
     path: ctx.path,
@@ -76,7 +81,20 @@ export function addIssueToContext(
       defaultErrorMap, // then global default map
     ].filter((x) => !!x) as ZodErrorMap[],
   });
-  ctx.common.issues.push(issue);
+}
+
+export function addIssueToContext(
+  ctx: ParseContext,
+  issueData: IssueData
+): void {
+  ctx.common.issues.push(makeIssueWithContext(ctx, issueData));
+}
+export function replaceContextIssues(
+  ctx: MutParseContext,
+  issues: ZodIssue[]
+): void {
+  // Requires cloning to prevent reference mutations
+  ctx.common.issues = [...issues];
 }
 
 export type ObjectPair = {
@@ -90,6 +108,9 @@ export class ParseStatus {
   }
   abort() {
     if (this.value !== "aborted") this.value = "aborted";
+  }
+  dirtyOrAbort(fatal = false) {
+    fatal ? this.abort() : this.dirty();
   }
 
   static mergeArray(
